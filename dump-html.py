@@ -14,7 +14,7 @@ logger = logging.getLogger("wechat")
 
 def get_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('name', help='name of contact')
+    parser.add_argument('--name', help='name of contact',default="_all_")
     parser.add_argument('--output', help='output html file', default='output.html')
     parser.add_argument('--db', default='decrypted.db', help='path to decrypted database')
     parser.add_argument('--avt', default='avatar.index', help='path to avatar.index file that only exists in old version of wechat')
@@ -29,31 +29,39 @@ if __name__ == '__main__':
     output_file = args.output
 
     parser = WeChatDBParser(args.db)
-
-    try:
-        chatid = parser.get_chat_id(args.name)
-    except KeyError:
-        sys.stderr.write(u"Valid Contacts: {}\n".format(
-            u'\n'.join(parser.all_chat_nicknames)))
-        sys.stderr.write(u"Couldn't find the chat {}.".format(name));
-        sys.exit(1)
-
-    res = Resource(parser, args.res, args.avt)
-    msgs = parser.msgs_by_chat[chatid]
-    logger.info(f"Number of Messages for chatid {chatid}: {len(msgs)}")
-    assert len(msgs) > 0
-
-    render = HTMLRender(parser, res)
-    htmls = render.render_msgs(msgs)
-
-    os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-    if len(htmls) == 1:
-        with open(output_file, 'w') as f:
-            f.write(htmls[0])
+    all_chat_ids=parser.all_chat_ids
+    if name=="_all_":
+        chat_ids=all_chat_ids
     else:
-        assert output_file.endswith(".html")
-        basename = output_file[:-5]
-        for idx, html in enumerate(htmls):
-            with open(basename + f'{idx:02d}.html', 'w') as f:
-                f.write(html)
-    res.emoji_reader.flush_cache()
+        try:
+            chatid = parser.get_chat_id(args.name)
+        except KeyError:
+            sys.stderr.write(u"Valid Contacts: {}\n".format(
+                u'\n'.join(parser.all_chat_nicknames)))
+            sys.stderr.write(u"Couldn't find the chat {}.".format(name));
+            sys.exit(1)
+        chat_ids=[chatid]
+    for chatid in chat_ids:
+        contact_name=parser.contacts[chatid]
+        if len(contact_name)==0:
+            contact_name="None"
+        path="./"+"result"+"/"+chatid+"_"+contact_name+"/"
+        os.makedirs(path, exist_ok=True)
+
+        res = Resource(parser, args.res, args.avt)
+        msgs = parser.msgs_by_chat[chatid]
+        logger.info(f"Number of Messages for chatid {chatid}: {len(msgs)}")
+        assert len(msgs) > 0
+
+        render = HTMLRender(parser, res)
+        htmls = render.render_msgs(msgs)
+
+        if len(htmls) == 1:
+            with open(path+chatid+'.html', 'w',encoding='utf-8') as f:
+                f.write(htmls[0])
+        else:
+            for idx, html in enumerate(htmls):
+                with open(path+chatid+'_{}.html'.format(idx), 'w',encoding='utf-8') as f:
+                    f.write(html)
+        res.emoji_reader.flush_cache()
+

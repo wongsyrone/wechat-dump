@@ -36,9 +36,10 @@ class ProgressReporter(object):
                     (self._total-self._cnt)*dt/self._cnt)
         else:
             eta_msg = '{} done'.format(self._cnt)
-        self._fout.write(u'{}: avg {:.1f}/sec'
+        if dt > 0:
+            self._fout.write(u'{}: avg {:.1f}/sec'
                          u', passed {:.1f}sec, {}  {} \r'.format(
-            self._name, self._cnt / dt, dt, eta_msg, extra_msg))
+                self._name, self._cnt / dt, dt, eta_msg, extra_msg))
         self._fout.flush()
 
     def finish(self):

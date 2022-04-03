@@ -27,14 +27,14 @@ if __name__ == '__main__':
         name = parser.contacts[chatid]
         if len(name) == 0:
             logger.info(f"Chat {chatid} doesn't have a valid display name.")
-            name = str(id(chatid))
+            name = str(id(chatid).decode('utf-8'))
         logger.info(f"Writing msgs for {name}")
         safe_name = safe_filename(name)
         outf = os.path.join(output_dir, safe_name + '.txt')
-        if os.path.isfile(outf):
-            logger.info(f"File {outf} exists! Skip contact {name}")
-            continue
-        with open(outf, 'w') as f:
+        #if os.path.isfile(outf):
+        #    logger.info(f"File {outf} exists! Skip contact {name}")
+        #    continue
+        with open(outf, 'w', encoding='utf-8') as f:
             for m in msgs:
                 f.write(str(m))
                 f.write("\n")

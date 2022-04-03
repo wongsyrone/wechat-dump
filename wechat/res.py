@@ -18,6 +18,8 @@ from .common.textutil import md5 as get_md5_hex, get_file_b64
 from .common.timer import timing
 from .msg import TYPE_SPEAK
 from .audio import parse_wechat_audio_file
+from .video import parse_wechat_video_file
+from .video import parse_wechat_video_thumb
 
 LIB_PATH = os.path.dirname(os.path.abspath(__file__))
 VOICE_DIRNAME = 'voice2'
@@ -78,6 +80,21 @@ class Resource(object):
         self.voice_cache = [pool.apply_async(parse_wechat_audio_file,
                                              (self._get_voice_filename(k),)) for k in voice_paths]
 
+    def get_video_mp4(self,imgpath):
+        file_name=os.path.join(self.video_dir,
+                               '{}.mp4'.format(imgpath))
+        if os.path.exists(file_name):
+            content=parse_wechat_video_file(file_name)
+        else:
+            content=(None,None)
+        return content
+
+    def get_video_thumb(self,imgpath):
+        file_name=os.path.join(self.video_dir,
+                               '{}'.format(imgpath))
+        return parse_wechat_video_thumb(file_name)
+        
+
     def get_avatar(self, username):
         """ return base64 unicode string"""
         im = self.avt_reader.get_avatar(username)
@@ -106,8 +123,9 @@ class Resource(object):
             dir1, dir2 = fname[:2], fname[2:4]
             dirname = os.path.join(self.img_dir, dir1, dir2)
             if not os.path.isdir(dirname):
+                dirname=self.img_dir
                 logger.warn("Directory not found: {}".format(dirname))
-                continue
+                #continue
             for f in os.listdir(dirname):
                 if fname in f:
                     full_name = os.path.join(dirname, f)

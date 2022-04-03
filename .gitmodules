@@ -1,0 +1,3 @@
+[submodule "SQLCipher-Password-Cracker-OpenCL"]
+	path = SQLCipher-Password-Cracker-OpenCL
+	url = https://github.com/wongsyrone/SQLCipher-Password-Cracker-OpenCL.git

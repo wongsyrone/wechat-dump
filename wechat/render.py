@@ -32,17 +32,19 @@ TEMPLATES_FILES = {TYPE_MSG: "TP_MSG",
                    TYPE_EMOJI: "TP_EMOJI",
                    TYPE_CUSTOM_EMOJI: "TP_EMOJI",
                    TYPE_LINK: "TP_MSG",
-                   TYPE_VIDEO_FILE: "TP_VIDEO_FILE"
-                  }
+                   TYPE_VIDEO_FILE: "TP_VIDEO_FILE",
+                   TYPE_WX_VIDEO: "TP_VIDEO",
+                   TYPE_VIDEO_THUMB : "TP_IMG",
+                   }
 TEMPLATES = {
-    k: open(os.path.join(STATIC_PATH, '{}.html'.format(v))).read()
+    k: open(os.path.join(STATIC_PATH, '{}.html'.format(v)),encoding='utf-8').read()
     for k, v in TEMPLATES_FILES.items()
 }
 
 class HTMLRender(object):
     def __init__(self, parser, res=None):
-        self.html = ensure_unicode(open(HTML_FILE).read())
-        self.time_html = open(TIME_HTML_FILE).read()
+        self.html = ensure_unicode(open(HTML_FILE,encoding='utf-8').read())
+        self.time_html = open(TIME_HTML_FILE,encoding='utf-8').read()
         self.parser = parser
         self.res = res
         assert self.res is not None, \
@@ -53,7 +55,7 @@ class HTMLRender(object):
         self.css_string = []    # css to add
         for css in css_files:
             logger.info("Loading {}".format(os.path.basename(css)))
-            css = ensure_unicode((open(css).read()))
+            css = ensure_unicode((open(css,encoding='utf-8').read()))
             self.css_string.append(css)
 
         js_files = glob.glob(os.path.join(LIB_PATH, 'static/*.js'))
@@ -62,7 +64,7 @@ class HTMLRender(object):
         self.js_string = []
         for js in js_files:
             logger.info("Loading {}".format(os.path.basename(js)))
-            js = ensure_unicode(open(js).read())
+            js = ensure_unicode(open(js,encoding='utf-8').read())
             self.js_string.append(js)
 
     @property
@@ -168,7 +170,19 @@ class HTMLRender(object):
             return TEMPLATES_FILES[TYPE_MSG].format(**format_dict)
         elif msg.type == TYPE_WX_VIDEO:
             # TODO: fetch video from resource
-            return fallback()
+            video_str,duration= self.res.get_video_mp4(msg.imgPath)
+            video_thumb=self.res.get_video_thumb(msg.imgPath)
+            if video_str is not None:
+                format_dict['video_duration'] = duration
+                format_dict['video_str'] = video_str            
+                return template.format(**format_dict)
+            elif video_thumb is not None:
+                template = TEMPLATES.get(TYPE_VIDEO_THUMB) 
+                format_dict["img"]=(video_thumb,"")
+                return template.format(**format_dict)
+                
+            else:                
+                return fallback()
         return fallback()
 
     def _render_partial_msgs(self, msgs):
@@ -197,7 +211,7 @@ class HTMLRender(object):
                            )
 
     def prepare_avatar_css(self, talkers):
-        avatar_tpl= ensure_unicode(open(FRIEND_AVATAR_CSS_FILE).read())
+        avatar_tpl= ensure_unicode(open(FRIEND_AVATAR_CSS_FILE,encoding='utf-8').read())
         my_avatar = self.res.get_avatar(self.parser.username)
         css = avatar_tpl.format(name='me', avatar=my_avatar)
 
@@ -228,6 +242,6 @@ class HTMLRender(object):
 
 if __name__ == '__main__':
     r = HTMLRender()
-    with open('/tmp/a.html', 'w') as f:
+    with open('/tmp/a.html', 'w',encoding='utf-8') as f:
         print >> f, r.html.format(style=r.css, talker='talker',
                                      messages='haha')

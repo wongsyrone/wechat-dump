@@ -1,0 +1,664 @@
+From f9f123bceb51abc726f20d97b2773ed6901976f6 Mon Sep 17 00:00:00 2001
+From: Jerry <simpleword2014@gmail.com>
+Date: Sun, 14 Jul 2019 02:56:48 -0400
+Subject: [PATCH] Add support for video, app message, semi_xml decoding.
+ Replace adb pull restriction by adb shell operation.
+
+---
+ android-interact.sh         | 26 +++++++++---
+ decrypt-db.py               |  1 +
+ dump-html.py                | 63 ++++++++++++++++++-----------
+ dump-msg.py                 |  6 +--
+ filemerge.py                | 54 +++++++++++++++++++++++++
+ wechat/msg.py               | 46 ++++++++++++++++++---
+ wechat/parser.py            |  1 +
+ wechat/render.py            | 23 +++++++++--
+ wechat/res.py               | 23 ++++++++++-
+ wechat/semi_xml.py          | 63 +++++++++++++++++++++++++++++
+ wechat/static/TP_VIDEO.html | 23 +++++++++++
+ wechat/video.py             | 79 +++++++++++++++++++++++++++++++++++++
+ 12 files changed, 366 insertions(+), 42 deletions(-)
+ create mode 100644 filemerge.py
+ create mode 100644 wechat/semi_xml.py
+ create mode 100644 wechat/static/TP_VIDEO.html
+ create mode 100644 wechat/video.py
+
+diff --git a/android-interact.sh b/android-interact.sh
+index 0092d8b..5e48386 100755
+--- a/android-interact.sh
++++ b/android-interact.sh
+@@ -9,6 +9,8 @@ cd "$PROG_DIR"
+ 
+ source compatibility.sh
+ 
++
++
+ # Please check that your path is the same, since this might be different among devices
+ RES_DIR="/mnt/sdcard/tencent/MicroMsg"
+ MM_DIR="/data/data/com.tencent.mm"
+@@ -16,8 +18,16 @@ MM_DIR="/data/data/com.tencent.mm"
+ echo "Starting rooted adb server..."
+ adb root
+ 
++getfile()
++{
++src_file=$1
++dest_file=$2
++adb shell "su -c cat $src_file" > $dest_file
++}
++
+ if [[ $1 == "uin" ]]; then
+-	adb pull $MM_DIR/shared_prefs/system_config_prefs.xml 2>/dev/null
++	#adb pull $MM_DIR/shared_prefs/system_config_prefs.xml 2>/dev/null
++    getfile $MM_DIR/shared_prefs/system_config_prefs.xml system_config_prefs.xml
+ 	uin=$($GREP 'default_uin' system_config_prefs.xml | $GREP -o 'value=\"\-?[0-9]*' | cut -c 8-)
+ 	[[ -n $uin ]] || {
+ 		>&2 echo "Failed to get wechat uin. You can try other methods, or report a bug."
+@@ -54,8 +64,8 @@ elif [[ $1 == "db" || $1 == "res" ]]; then
+ 		mkdir -p resource; cd resource
+ 		echo "Pulling resources... "
+ 		for d in avatar image2 voice2 emoji video sfs; do
+-			adb shell "cd $RES_DIR/$chooseUser &&
+-								 busybox tar czf - $d 2>/dev/null | busybox base64" |
++			adb shell "su -c 'cd $RES_DIR/$chooseUser &&
++								 busybox tar czf - $d 2>/dev/null | busybox base64'" |
+ 					base64 -di | tar xzf -
+ 
+ 			# Old Slow Way:
+@@ -72,14 +82,18 @@ elif [[ $1 == "db" || $1 == "res" ]]; then
+ 		echo "Total size: $(du -sh resource | cut -f1)"
+ 	else
+ 		echo "Pulling database and avatar index file..."
+-		adb pull $MM_DIR/MicroMsg/$chooseUser/EnMicroMsg.db
++		#adb pull $MM_DIR/MicroMsg/$chooseUser/EnMicroMsg.db
++        getfile $MM_DIR/MicroMsg/$chooseUser/EnMicroMsg.db EnMicroMsg.db
+ 		[[ -f EnMicroMsg.db ]] && \
+ 			echo "Database successfully downloaded to EnMicroMsg.db" || {
+ 			>&2 echo "Failed to pull database by adb"
+ 			exit 1
+ 		}
+-		adb pull $MM_DIR/MicroMsg/$chooseUser/sfs/avatar.index
+-		[[ -f avatar.index ]] && \
++		#adb pull $MM_DIR/MicroMsg/$chooseUser/sfs/avatar.index
++			adb shell "su -c 'cd $MM_DIR/MicroMsg/$chooseUser/ &&
++								 busybox tar czf - avatar 2>/dev/null | busybox base64'" |
++					base64 -di | tar xzf -
++		[[ -f avatar ]] && \
+ 			echo "Avatar index successfully downloaded to avatar.index" || {
+ 				>&2 echo "Failed to pull avatar index by adb, are you using latest version of wechat?"
+ 				exit 1
+diff --git a/decrypt-db.py b/decrypt-db.py
+index 86924f4..5c1a920 100755
+--- a/decrypt-db.py
++++ b/decrypt-db.py
+@@ -41,6 +41,7 @@ def get_key(imei, uin):
+         os.unlink(output)
+ 
+     key = get_key(args.imei, args.uin)
++    #key= "fc168ef"#"000a891"#"c13b150"#
+     print "KEY: {}".format(key)
+ 
+     print "Decrypt and dump database to {} ... ".format(output)
+diff --git a/dump-html.py b/dump-html.py
+index f43d91e..cf365ef 100755
+--- a/dump-html.py
++++ b/dump-html.py
+@@ -3,9 +3,11 @@
+ # File: dump-html.py
+ # Date: Wed Mar 25 17:44:20 2015 +0800
+ # Author: Yuxin Wu
++# Modified Jerry @ July 2019
+ 
+ import sys
+ import argparse
++import os
+ 
+ from common.textutil import ensure_unicode
+ from wechat.parser import WeChatDBParser
+@@ -14,7 +16,7 @@
+ 
+ def get_args():
+     parser = argparse.ArgumentParser()
+-    parser.add_argument('name', help='name of contact')
++    parser.add_argument('--name', help='name of contact',default="_all_")
+     parser.add_argument('--output', help='output html file', default='output.html')
+     parser.add_argument('--db', default='decrypted.db', help='path to decrypted database')
+     parser.add_argument('--avt', default='avatar.index', help='path to avatar.index file')
+@@ -29,26 +31,43 @@ def get_args():
+     output_file = args.output
+ 
+     parser = WeChatDBParser(args.db)
++    all_chat_ids=parser.all_chat_ids
+ 
+-    try:
+-        chatid = parser.get_id_by_nickname(name)
+-    except KeyError:
+-        sys.stderr.write(u"Valid Contacts: {}\n".format(
+-            u'\n'.join(parser.all_chat_nicknames)))
+-        sys.stderr.write(u"Couldn't find the chat {}.".format(name));
+-        sys.exit(1)
+-    res = Resource(parser, args.res, args.avt)
+-    msgs = parser.msgs_by_chat[chatid]
+-    print "Number of Messages: ", len(msgs)
+-    assert len(msgs) > 0
+-
+-    render = HTMLRender(parser, res)
+-    htmls = render.render_msgs(msgs)
+-
+-    if len(htmls) == 1:
+-        with open(output_file, 'w') as f:
+-            print >> f, htmls[0].encode('utf-8')
++    if name=="_all_":
++        chat_ids=all_chat_ids
+     else:
+-        for idx, html in enumerate(htmls):
+-            with open(output_file + '.{}'.format(idx), 'w') as f:
+-                print >> f, html.encode('utf-8')
++        try:
++            chatid = parser.get_id_by_nickname(name)
++        except KeyError:
++            sys.stderr.write(u"Valid Contacts: {}\n".format(
++                u'\n'.join(parser.all_chat_nicknames)))
++            sys.stderr.write(u"Couldn't find the chat {}.".format(name));
++            sys.exit(1)
++        chat_ids=[chat_id]
++        
++    for chatid in chat_ids:
++        contact_name=parser.contacts[chatid]
++        if len(contact_name)==0:
++            contact_name="None"
++        path="./"+"result"+"/"+chatid+"_"+contact_name+"/"
++        try:
++            os.makedirs(path)
++        except:
++            print(path+ "exists")
++            pass
++
++        res = Resource(parser, args.res, args.avt)
++        msgs = parser.msgs_by_chat[chatid]
++        print "Number of Messages: ", len(msgs)
++        assert len(msgs) > 0
++
++        render = HTMLRender(parser, res)
++        htmls = render.render_msgs(msgs)
++
++        if len(htmls) == 1:
++            with open(path+chatid+'.html', 'w') as f:
++                print >> f, htmls[0].encode('utf-8')
++        else:
++            for idx, html in enumerate(htmls):
++                with open(path+chatid+'_{}.html'.format(idx), 'w') as f:
++                    print >> f, html.encode('utf-8')
+diff --git a/dump-msg.py b/dump-msg.py
+index 16f60b2..883978c 100755
+--- a/dump-msg.py
++++ b/dump-msg.py
+@@ -30,9 +30,9 @@
+     print u"Writing msgs for {}".format(name)
+     safe_name = safe_filename(name)
+     outf = os.path.join(output_dir, safe_name + '.txt')
+-    if os.path.isfile(outf):
+-        print(u"File {} exists! Skip contact {}".format(outf, name))
+-        continue
++    #if os.path.isfile(outf):
++    #    print(u"File {} exists! Skip contact {}".format(outf, name))
++    #    continue
+     with open(outf, 'w') as f:
+         for m in msgs:
+             print >> f, m
+diff --git a/filemerge.py b/filemerge.py
+new file mode 100644
+index 0000000..963d824
+--- /dev/null
++++ b/filemerge.py
+@@ -0,0 +1,54 @@
++from shutil import copyfile
++from shutil import copystat
++
++import ffmpeg
++import imghdr
++import os
++import re
++import subprocess
++
++def merge(src_path,dst_path,pattern="\\w*",convert=None):
++    def default_convert(file_name,useless):
++        return file_name
++    if convert is None:
++        convert=default_convert
++    file_list=os.listdir(src_path)
++    for file_name in file_list:
++        print(file_name)
++        full_path=os.path.join(src_path,file_name)
++        if os.path.isfile(full_path):
++            if re.match(pattern,file_name) is not None:
++                dst_full_path=os.path.join(dst_path,convert(file_name,full_path))
++                if file_name[-4:]==".amr":
++                    dst_full_path=dst_full_path[:-3]+"mp3"
++                    tmp_full_path=full_path[:-3]+"pcm"
++                    dir_path = os.path.dirname(os.path.realpath(__file__))
++                    print(os.path.join(dir_path,full_path))
++                    try:
++                        subprocess.run("""silk_v3_decoder.exe "%s" "%s" """%(full_path,tmp_full_path))
++                        subprocess.run("""ffmpeg -y -f s16le -ar 24000 -ac 1 -i "%s" "%s" """%(tmp_full_path,dst_full_path))
++                        copystat(full_path,dst_full_path)
++                    except Exception as e:
++                        print(e)
++                        pass
++                else:
++                    print(full_path,dst_full_path)
++                    copyfile(full_path,dst_full_path)
++                    copystat(full_path,dst_full_path)
++        else:
++            merge(full_path,dst_path,pattern=pattern,convert=convert)
++
++def parser(path,full_path):
++    suffix=imghdr.what(full_path)
++    if path.find(".")>=0:
++        path=path[:path.find(".")]
++    if len(path)==0:
++        path="Empty"
++    if suffix is None:
++        suffix=""
++    return path+"."+suffix
++            
++if __name__=="__main__":
++    merge("image2","backup\\image","\\w*",parser)
++    merge("video","backup\\video","\\w*.mp4")
++    merge("voice2","backup\\voice","\\w*")
+\ No newline at end of file
+diff --git a/wechat/msg.py b/wechat/msg.py
+index 96015e0..05f26a3 100644
+--- a/wechat/msg.py
++++ b/wechat/msg.py
+@@ -15,19 +15,32 @@
+ TYPE_WX_VIDEO = 62  # video took by wechat
+ TYPE_SYSTEM = 10000
+ TYPE_CUSTOM_EMOJI = 1048625
+-TYPE_REDENVELOPE = 436207665
++TYPE_REDENVELOPE = [436207665,469762097]
+ TYPE_LOCATION_SHARING = -1879048186
+ TYPE_APP_MSG = 16777265
++TYPE_INVITE = 570425393
++TYPE_APP=285212721
++
++TYPE_VIDEO_THUMB= -1
++
++_KNOWN_TYPES=[]
++for k in dir():
++    if k.startswith('TYPE_'):
++        k=eval(k)
++        if isinstance(k,list):
++            _KNOWN_TYPES.extend(k)
++        else:
++            _KNOWN_TYPES.append(k)
+ 
+-_KNOWN_TYPES = [eval(k) for k in dir() if k.startswith('TYPE_')]
+ 
+ import re
+ from pyquery import PyQuery
+ import logging
+ logger = logging.getLogger(__name__)
+ 
+-from common.textutil import ensure_unicode
+ 
++from common.textutil import ensure_unicode
++from semi_xml import read_semi
+ 
+ class WeChatMsg(object):
+ 
+@@ -43,6 +56,7 @@ def __init__(self, values):
+         if self.type not in _KNOWN_TYPES:
+             logger.warn("Unhandled message type: {}".format(self.type))
+             # only to supress repeated warning:
++            print(self.type,self.content)
+             _KNOWN_TYPES.append(self.type)
+ 
+     def msg_str(self):
+@@ -89,11 +103,32 @@ def msg_str(self):
+         elif self.type == TYPE_EMOJI:
+             # TODO add emoji name
+             return self.content
+-        elif self.type == TYPE_REDENVELOPE:
+-            pq = PyQuery(self.content_xml_ready, parser='xml')
++        elif self.type in TYPE_REDENVELOPE:
++            try:
++                pq = PyQuery(self.content_xml_ready, parser='xml')
++            except:
++                content=self.content_xml_ready[self.content_xml_ready.find(u'<')-1:]
++                pq = PyQuery(content, parser='xml')
+ 
+             title = pq('sendertitle').text()
+             return u"[RED ENVELOPE]\n{}".format(title)
++        elif self.type == TYPE_MSG:
++            return self.content
++        elif self.type == TYPE_INVITE:
++
++            pq = PyQuery(self.content_xml_ready, parser='xml')
++           
++            member_nick_name=pq("nickname").eq(0)
++            lst=[]
++            for i in range(1,10):
++                new_nick_name=pq("nickname").eq(i).text()
++                if new_nick_name!="":
++                    lst.append(new_nick_name)
++
++            return u"INVITE: {} invited {} to the gourp chat".format(member_nick_name.text(),",".join(lst))
++        elif self.type == TYPE_APP:
++            content_list=read_semi(self.content)
++            return u'\n'.join(content_list)
+         else:
+             # TODO replace smiley with text
+             return self.content
+@@ -136,4 +171,3 @@ def get_emoji_product_id(self):
+         if not emoji:
+             return None
+         return emoji.attrs['productid']
+-
+diff --git a/wechat/parser.py b/wechat/parser.py
+index 05453e3..d82e413 100644
+--- a/wechat/parser.py
++++ b/wechat/parser.py
+@@ -127,6 +127,7 @@ def _parse(self):
+     def _parse_msg_row(self, row):
+         """ parse a record of message into my format"""
+         values = dict(zip(WeChatDBParser.FIELDS, row))
++        
+         if values['content']:
+             values['content'] = ensure_unicode(values['content'])
+         else:
+diff --git a/wechat/render.py b/wechat/render.py
+index 6369a1a..7adb1d1 100644
+--- a/wechat/render.py
++++ b/wechat/render.py
+@@ -34,7 +34,11 @@
+                    TYPE_SPEAK: "TP_SPEAK",
+                    TYPE_EMOJI: "TP_EMOJI",
+                    TYPE_CUSTOM_EMOJI: "TP_EMOJI",
+-                   TYPE_LINK: "TP_MSG"}
++                   TYPE_LINK: "TP_MSG",
++                   TYPE_WX_VIDEO: "TP_VIDEO",
++                   TYPE_VIDEO_FILE:"TP_VIDEO",
++                   TYPE_VIDEO_THUMB : "TP_IMG",
++                   }
+ TEMPLATES = {k: ensure_unicode(open(os.path.join(STATIC_PATH, '{}.html'.format(v))).read())
+     for k, v in TEMPLATES_FILES.iteritems()}
+ 
+@@ -88,6 +92,7 @@ def process(js):
+         self.final_js = u"\n".join(map(process, self.js_string))
+         return self.final_js
+ 
++        
+     #@timing(total=True)
+     def render_msg(self, msg):
+         """ render a message, return the html block"""
+@@ -150,9 +155,21 @@ def fallback():
+                 content = u'URL:<a target="_blank" href="{0}">{0}</a>'.format(url)
+                 format_dict['content'] = content
+                 return template.format(**format_dict)
+-        elif msg.type == TYPE_WX_VIDEO:
++        elif msg.type == TYPE_WX_VIDEO or msg.type==TYPE_VIDEO_FILE:
+             # TODO: fetch video from resource
+-            return fallback()
++            video_str,duration= self.res.get_video_mp4(msg.imgPath)
++            video_thumb=self.res.get_video_thumb(msg.imgPath)
++            if video_str is not None:
++                format_dict['video_duration'] = duration
++                format_dict['video_str'] = video_str            
++                return template.format(**format_dict)
++            elif video_thumb is not None:
++                template = TEMPLATES.get(TYPE_VIDEO_THUMB) 
++                format_dict["img"]=(video_thumb,"")
++                return template.format(**format_dict)
++                
++            else:                
++                return fallback()
+         return fallback()
+ 
+     def _render_partial_msgs(self, msgs):
+diff --git a/wechat/res.py b/wechat/res.py
+index b4755cc..0fe94c3 100644
+--- a/wechat/res.py
++++ b/wechat/res.py
+@@ -23,12 +23,15 @@
+ from common.timer import timing
+ from .msg import TYPE_SPEAK
+ from .audio import parse_wechat_audio_file
++from .video import parse_wechat_video_file
++from .video import parse_wechat_video_thumb
+ 
+ LIB_PATH = os.path.dirname(os.path.abspath(__file__))
+ INTERNAL_EMOJI_DIR = os.path.join(LIB_PATH, 'static', 'internal_emoji')
+ VOICE_DIRNAME = 'voice2'
+ IMG_DIRNAME = 'image2'
+ EMOJI_DIRNAME = 'emoji'
++VIDEO_DIRNAME = 'video'
+ 
+ JPEG_QUALITY = 50
+ 
+@@ -83,6 +86,7 @@ def check(subdir):
+         self.img_dir = os.path.join(res_dir, IMG_DIRNAME)
+         self.voice_dir = os.path.join(res_dir, VOICE_DIRNAME)
+         self.emoji_dir = os.path.join(res_dir, EMOJI_DIRNAME)
++        self.video_dir = os.path.join(res_dir, VIDEO_DIRNAME)
+         self.avt_reader = AvatarReader(res_dir, avt_db)
+ 
+     def get_voice_filename(self, imgpath):
+@@ -103,6 +107,20 @@ def get_voice_mp3(self, imgpath):
+                 self.get_voice_filename(imgpath))
+         return self.voice_cache[idx].get()
+ 
++    def get_video_mp4(self,imgpath):
++        file_name=os.path.join(self.video_dir,
++                               '{}.mp4'.format(imgpath))
++        if os.path.exists(file_name):
++            content=parse_wechat_video_file(file_name)
++        else:
++            content=(None,None)
++        return content
++
++    def get_video_thumb(self,imgpath):
++        file_name=os.path.join(self.video_dir,
++                               '{}'.format(imgpath))
++        return parse_wechat_video_thumb(file_name)
++        
+     def cache_voice_mp3(self, msgs):
+         """ for speed.
+         msgs: a collection of WeChatMsg, to cache for later fetch"""
+@@ -143,8 +161,9 @@ def _get_img_file(self, fnames):
+             dir1, dir2 = fname[:2], fname[2:4]
+             dirname = os.path.join(self.img_dir, dir1, dir2)
+             if not os.path.isdir(dirname):
+-                logger.warn("Directory not found: {}".format(dirname))
+-                continue
++                dirname=self.img_dir
++                #logger.warn("Directory not found: {}".format(dirname))
++                #continue
+             for f in os.listdir(dirname):
+                 if fname in f:
+                     full_name = os.path.join(dirname, f)
+diff --git a/wechat/semi_xml.py b/wechat/semi_xml.py
+new file mode 100644
+index 0000000..aa6b176
+--- /dev/null
++++ b/wechat/semi_xml.py
+@@ -0,0 +1,63 @@
++
++
++import re
++import codecs
++
++ESCAPE_SEQUENCE_RE = re.compile(r'''
++    ( \\U........      # 8-digit hex escapes
++    | \\u....          # 4-digit hex escapes
++    | \\x..            # 2-digit hex escapes
++    | \\[0-7]{1,3}     # Octal escapes
++    | \\N\{[^}]+\}     # Unicode characters by name
++    | \\[\\'"abfnrtv]  # Single-character escapes
++    )''', re.UNICODE | re.VERBOSE)
++
++def decode_escapes(s):
++    def decode_match(match):
++        return codecs.decode(match.group(0), 'unicode-escape')
++
++    return ESCAPE_SEQUENCE_RE.sub(decode_match, s)
++
++def read_semi(data):
++    #data=data.decode("raw_unicode_escape")
++    result={}
++    pivot=len("~SEMI_XML~")
++    def get_length():
++        if max_len<pivot+2:
++            return 0
++        hb=data[pivot:pivot+1]
++        lb=data[pivot+1:pivot+2]
++        length=(ord(hb)*(2**16)+ord(lb))  
++        #print(length)
++        return length
++    max_len=len(data)
++    while pivot<max_len:
++        lk=get_length()
++        pivot+=2
++        key=data[pivot:pivot+lk]
++        pivot+=lk
++        lv=get_length()
++        pivot+=2
++        val=data[pivot:pivot+lv]
++        pivot+=lv
++        result[key]=val        
++    
++    res_title_lst=[]
++    res_digest_lst=[]
++    for key,val in sorted(result.iteritems(),key=lambda x: x[0]):
++        if key.find("digest")>0:
++            res_str=u"Digest {}".format(val)
++            res_digest_lst.append(res_str)
++        elif  key.find("title")>0:
++            res_str=u"Title {}".format(val)        
++            res_title_lst.append(res_str)
++    res_str_lst=[]
++    for t,d in zip(res_title_lst,res_digest_lst):
++        res_str_lst.extend([t,d])
++    return res_str_lst
++
++if __name__=="__main__":   
++    d='~SEMI_XML~\x00\'.msg.appmsg.mmreader.category.item4.url\x00\xc7http://mp.weixin.qq.com/s?__biz=MzA5NzIwMjQzMA==&mid=2649947452&idx=5&sn=01c13a65403289f4d315eba65bef351e&chksm=88a224adbfd5adbb6fce68feee50d671ebff41d3ab75e7b1d131794cf6fc36e80443b82aa90b&scene=0#rd\x00+.msg.appmsg.mmreader.category.item1.longurl\x00\x00\x006.msg.appmsg.mmreader.category.item.sources.source.name\x00\x07\u5317\u7f8e\u7559\u5b66\u751f\u65e5\u62a5\x00,.msg.appmsg.mmreader.category.item4.pub_time\x00\n1547305027\x00).msg.appmsg.mmreader.category.item4.title\x00$\u6fb3\u6d32\u975e\u6cd5\u5993\u9662\u904d\u5730\u5f00\u82b1\uff0c\u8fd8\u6709\u4e2d\u56fd\u5973\u5b50\u6301\u5b66\u751f\u7b7e\u8bc1\u5356\u6deb\uff01\u80cc\u540e\u539f\u56e0\u4ee4\u4eba\u550f\u5618\u3002\u3002\u3002\x00\x13.msg.appmsg.extinfo\x00\x00\x00).msg.appmsg.mmreader.category.item3.cover\x00\x94http://mmbiz.qpic.cn/mmbiz_jpg/RiacFDBX14xDkAtHQBhuYoE88ialEsFlR1sAqWIhVNFsGk3A8jnXpfEWhcVuUlrEEEiawhZic8m3ia34vYcnPiaDSWRg/300?wxtype=jpeg&wxfrom=0\x004.msg.appmsg.mmreader.category.item3.appmsg_like_type\x00\x010\x00*.msg.appmsg.mmreader.category.item5.fileid\x00\t502463747\x00*.msg.appmsg.mmreader.category.item1.fileid\x00\t502463800\x00*.msg.appmsg.mmreader.category.item3.fileid\x00\t502463777\x002.msg.appmsg.mmreader.category.item3.sources.source\x00\x19\n                        '
++ 
++    print(read_semi(d))
++    
+\ No newline at end of file
+diff --git a/wechat/static/TP_VIDEO.html b/wechat/static/TP_VIDEO.html
+new file mode 100644
+index 0000000..41ae56c
+--- /dev/null
++++ b/wechat/static/TP_VIDEO.html
+@@ -0,0 +1,23 @@
++<div class="chatItem {sender_label}">
++  <div class="chatItemContent">
++    <span class="avatar"></span>
++    <div class="cloud cloudVideo" onclick="playVideo(event)" >
++      <div class="cloudPannel" title="{time}" {nickname}>
++        <div class="sendStatus">
++          <span class="second">{video_duration}"</span>
++        </div>
++        <div class="cloudBody">
++          <div class="cloudContent">
++            <span class="img_wrap">
++              <a class="fancybox" rel="group" href="">          
++                <video height="160" controls>
++                    <source src="data:video/mp4;base64,{video_str}" />
++                </video>
++              </a>
++            </span>                
++          </div>
++        </div>
++      </div>
++    </div>
++  </div>
++</div>
+diff --git a/wechat/video.py b/wechat/video.py
+new file mode 100644
+index 0000000..56209af
+--- /dev/null
++++ b/wechat/video.py
+@@ -0,0 +1,79 @@
++import os
++from subprocess import PIPE, Popen, call
++import logging
++from PIL import Image
++import cStringIO
++
++from common.textutil import get_file_b64
++
++import pysox
++
++import subprocess as sp
++import json
++import base64
++
++JPEG_QUALITY=50
++
++logger = logging.getLogger(__name__)
++
++def probe(vid_file_path):
++    ''' Give a json from ffprobe command line
++
++    @vid_file_path : The absolute (full) path of the video file, string.
++    '''
++    if type(vid_file_path) != str:
++        raise Exception('Gvie ffprobe a full file path of the video')
++        return
++
++    command = ["ffprobe",
++            "-loglevel",  "quiet",
++            "-print_format", "json",
++             "-show_format",
++             "-show_streams",
++             vid_file_path
++             ]
++    print(" ".join(command))
++    pipe = sp.Popen(command, stdout=sp.PIPE, stderr=sp.STDOUT)
++    out, err = pipe.communicate()
++    return json.loads(out)
++
++def duration(vid_file_path):
++    ''' Video's duration in seconds, return a float number
++    '''
++    _json = probe(vid_file_path)
++
++    if 'format' in _json:
++        if 'duration' in _json['format']:
++            return float(_json['format']['duration'])
++
++    if 'streams' in _json:
++        # commonly stream 0 is the video
++        for s in _json['streams']:
++            if 'duration' in s:
++                return float(s['duration'])
++
++    # if everything didn't happen,
++    # we got here because no single 'return' in the above happen.
++    raise Exception('I found no duration')
++    #return None
++
++def parse_wechat_video_file(path):
++    return get_file_b64(path),duration(path)
++    
++def parse_wechat_video_thumb(path):
++    for suffix in ["png","jpg","jpeg"]:
++        if os.path.exists(path+"."+suffix):
++            im=Image.open(path+"."+suffix)
++            buf = cStringIO.StringIO()
++            try:
++                im.save(buf, 'JPEG', quality=JPEG_QUALITY)
++            except IOError:
++                try:
++                    # sometimes it works the second time...
++                    im.save(buf, 'JPEG', quality=JPEG_QUALITY)
++                except IOError:
++                    return None
++            jpeg_str = buf.getvalue()
++            return base64.b64encode(jpeg_str)
++    return None
++        
+\ No newline at end of file
