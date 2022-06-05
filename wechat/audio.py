@@ -11,6 +11,10 @@ from .common.procutil import subproc_succ
 
 SILK_DECODER = os.path.join(os.path.dirname(__file__),
                             '../third-party/silk/decoder.exe')
+SOX_EXE = os.path.join(os.path.dirname(__file__),
+                            '../sox/sox.exe')
+SOXI_EXE = os.path.join(os.path.dirname(__file__),
+                            '../sox/soxi.exe')
 
 def parse_wechat_audio_file(file_name):
     try:
@@ -29,9 +33,9 @@ def do_parse_wechat_audio_file(file_name):
         with open(file_name, 'rb') as f:
             header = f.read(10)
         if b'AMR' in header:
-            cmd = f"F:\\sox\\sox -e signed -c 1 {file_name} {mp3_file}"
+            cmd = f"{SOX_EXE} -e signed -c 1 {file_name} {mp3_file}"
             subproc_succ(cmd)
-            cmd = f"F:\\sox\\soxi -D {mp3_file}"
+            cmd = f"{SOXI_EXE} -D {mp3_file}"
             duration = float(subproc_succ(cmd))
 
             # The below is python2 only. It should be equivalent to using sox from command line
@@ -49,7 +53,7 @@ def do_parse_wechat_audio_file(file_name):
 
             raw_file = os.path.join(temp,
                                     os.path.basename(file_name)[:-4] + '.raw')
-            cmd = '{0} {1} {2}'.format(SILK_DECODER, file_name, raw_file)
+            cmd = f'{SILK_DECODER} {file_name} {raw_file}'
             out = subproc_succ(cmd)
             for line in out.split(b'\n'):
                 if b'File length' in line:
@@ -59,7 +63,7 @@ def do_parse_wechat_audio_file(file_name):
                 raise RuntimeError("Error decoding silk audio file!" + out.decode('utf-8'))
 
             # TODO don't know how to do this with python
-            subproc_succ('F:\\sox\\sox -r 24000 -e signed -b 16 -c 1 {} {}'.format(raw_file, mp3_file))
+            subproc_succ(f'{SOX_EXE} -r 24000 -e signed -b 16 -c 1 {raw_file} {mp3_file}')
         else:
             raise NotImplementedError("Audio file format cannot be recognized.")
         mp3_string = get_file_b64(mp3_file)
